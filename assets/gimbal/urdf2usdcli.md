@@ -1,6 +1,6 @@
 ./isaaclab.sh -p scripts/tools/convert_urdf.py \
-  /home/sz/code/rl/target_aiming/assets/gimbal/gimbal.urdf \
-  /home/sz/code/rl/target_aiming/assets/gimbal/gimbal.usd \
+  /home/maybe/code/rl/target-aiming/assets/gimbal/gimbal.urdf \
+  /home/maybe/code/rl/target-aiming/assets/gimbal/gimbal.usd \
   --merge-joints \
   --joint-stiffness 0.0 \
   --joint-damping 0.0 \
