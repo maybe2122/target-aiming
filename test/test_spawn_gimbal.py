@@ -10,11 +10,17 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(
     description="This script demonstrates adding a gimbal to an Isaac Lab environment."
 )
-parser.add_argument("--num_envs", type=int, default=10, help="Number of environments to spawn.")
+parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to spawn.")
+
+
+
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
-
+args_cli.enable_cameras = True
 app_launcher = AppLauncher(args_cli)
+
+
+
 simulation_app = app_launcher.app
 
 import os
@@ -24,20 +30,62 @@ from PIL import Image
 
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.assets import AssetBaseCfg
+from isaaclab.assets import AssetBaseCfg, RigidObjectCfg
 from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.sensors import CameraCfg
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
+from isaaclab.sim import UsdFileCfg
+
+#{ISAAC_NUCLEUS_DIR}/Robots/Yahboom/Dofbot/dofbot.usd
+
+GIMBAL_CONFIG = ArticulationCfg(
+    spawn=sim_utils.UsdFileCfg(
+        usd_path="assets/gimbal/gimbal.usd"
+    ),
+    actuators={
+        "gimbal_acts": ImplicitActuatorCfg(
+            joint_names_expr=["yaw_joint", "pitch_joint"],
+            damping=None,
+            stiffness=None
+        )
+    },
+)
 
 JETBOT_CONFIG = ArticulationCfg(
-    spawn=sim_utils.UsdFileCfg(usd_path=f"/home/maybe/code/rl/IsaacLab-Mos/local_assets/jetbot.usd"),
+    spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/NVIDIA/Jetbot/jetbot.usd"),
     actuators={"wheel_acts": ImplicitActuatorCfg(joint_names_expr=[".*"], damping=None, stiffness=None)},
 )
+CAR_CONFIG = RigidObjectCfg(
+    prim_path="{ENV_REGEX_NS}/Car",
+    spawn=UsdFileCfg(
+    usd_path="/home/sz/code/rl/target_aiming/assets/lamborghini_revuelto.usd",
+    # scale=(1000.0, 1000.0, 1000.0)
+    ),
+    init_state=RigidObjectCfg.InitialStateCfg(
+        pos=(6.0, 6.0, 0.05),   # x y z
+        rot=(0.7071, 0.7071, 0.0, 0.0),  # quaternion (w x y z)
+    ),
+)
+
+# CAR_CONFIG = AssetBaseCfg(
+#     prim_path="{ENV_REGEX_NS}/Car",
+#     spawn=sim_utils.CuboidCfg(
+#         size=(0.5, 0.5, 0.5),   # cube 尺寸 (x,y,z)
+#         visual_material=sim_utils.PreviewSurfaceCfg(
+#             diffuse_color=(1.0, 0.0, 0.0),  # 红色
+#         ),
+#     ),
+#     init_state=AssetBaseCfg.InitialStateCfg(
+#         pos=(1.5, 0.0, 1.0),   # 放空中更容易看到
+#         rot=(1.0, 0.0, 0.0, 0.0),
+#     ),
+# )
 
 DOFBOT_CONFIG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
-        usd_path=f"/home/maybe/code/rl/IsaacLab-Mos/local_assets/dofbot.usd",
+        usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/Yahboom/Dofbot/dofbot.usd",
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             max_depenetration_velocity=5.0,
@@ -94,13 +142,14 @@ class NewRobotsSceneCfg(InteractiveSceneCfg):
 
     # robots
     Jetbot = JETBOT_CONFIG.replace(prim_path="{ENV_REGEX_NS}/Jetbot")
-    Dofbot = DOFBOT_CONFIG.replace(prim_path="{ENV_REGEX_NS}/Dofbot")
-
+    # Dofbot = DOFBOT_CONFIG.replace(prim_path="{ENV_REGEX_NS}/Dofbot")
+    Gimbal = GIMBAL_CONFIG.replace(prim_path="{ENV_REGEX_NS}/Gimbal")
+    Car = CAR_CONFIG.replace(prim_path="{ENV_REGEX_NS}/Car")
     # RGB camera mounted on Dofbot end effector
     # NOTE: replace "link5" with the actual end effector link name from:
     #       print(scene["Dofbot"].data.body_names)
     camera = CameraCfg(
-        prim_path="{ENV_REGEX_NS}/Dofbot/link5/camera",
+        prim_path="{ENV_REGEX_NS}/Gimbal/pitch_link/camera",
         update_period=0.1,
         height=480,
         width=640,
@@ -109,7 +158,7 @@ class NewRobotsSceneCfg(InteractiveSceneCfg):
             focal_length=24.0,
             focus_distance=400.0,
             horizontal_aperture=20.955,
-            clipping_range=(0.1, 1000.0),
+            clipping_range=(0.1, 5.0),
         ),
         offset=CameraCfg.OffsetCfg(
             pos=(0.1, 0.0, 0.0),
@@ -117,6 +166,7 @@ class NewRobotsSceneCfg(InteractiveSceneCfg):
             convention="ros",
         ),
     )
+
 
 
 def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
@@ -133,13 +183,17 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
 
             root_jetbot_state = scene["Jetbot"].data.default_root_state.clone()
             root_jetbot_state[:, :3] += scene.env_origins
-            root_dofbot_state = scene["Dofbot"].data.default_root_state.clone()
-            root_dofbot_state[:, :3] += scene.env_origins
+            root_gimbal_state = scene["Gimbal"].data.default_root_state.clone()
+            root_gimbal_state[:, :3] += scene.env_origins
+            root_car_state = scene["Car"].data.default_root_state.clone()
+            root_car_state[:, :3] += scene.env_origins
 
             scene["Jetbot"].write_root_pose_to_sim(root_jetbot_state[:, :7])
             scene["Jetbot"].write_root_velocity_to_sim(root_jetbot_state[:, 7:])
-            scene["Dofbot"].write_root_pose_to_sim(root_dofbot_state[:, :7])
-            scene["Dofbot"].write_root_velocity_to_sim(root_dofbot_state[:, 7:])
+            scene["Gimbal"].write_root_pose_to_sim(root_gimbal_state[:, :7])
+            scene["Gimbal"].write_root_velocity_to_sim(root_gimbal_state[:, 7:])
+            scene["Car"].write_root_pose_to_sim(root_car_state[:, :7])
+            scene["Car"].write_root_velocity_to_sim(root_car_state[:, 7:])
 
             joint_pos, joint_vel = (
                 scene["Jetbot"].data.default_joint_pos.clone(),
@@ -148,17 +202,17 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
             scene["Jetbot"].write_joint_state_to_sim(joint_pos, joint_vel)
 
             joint_pos, joint_vel = (
-                scene["Dofbot"].data.default_joint_pos.clone(),
-                scene["Dofbot"].data.default_joint_vel.clone(),
+                scene["Gimbal"].data.default_joint_pos.clone(),
+                scene["Gimbal"].data.default_joint_vel.clone(),
             )
-            scene["Dofbot"].write_joint_state_to_sim(joint_pos, joint_vel)
+            scene["Gimbal"].write_joint_state_to_sim(joint_pos, joint_vel)
 
             scene.reset()
-            print("[INFO]: Resetting Jetbot and Dofbot state...")
+            print("[INFO]: Resetting scene state...")
 
-        # 第一帧打印 Dofbot body 名称，用于确认末端 link 名
+        # 第一帧打印 Gimbal body 名称
         if count == 1:
-            print("[INFO]: Dofbot body names:", scene["Dofbot"].data.body_names)
+            print("[INFO]: Gimbal body names:", scene["Gimbal"].data.body_names)
 
         # drive Jetbot
         if count % 100 < 75:
@@ -167,10 +221,10 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
             action = torch.Tensor([[5.0, -5.0]])
         scene["Jetbot"].set_joint_velocity_target(action)
 
-        # wave Dofbot
-        wave_action = scene["Dofbot"].data.default_joint_pos.clone()
-        wave_action[:, 0:4] = 0.01 * np.sin(2 * np.pi * 0.1 * sim_time)
-        scene["Dofbot"].set_joint_position_target(wave_action)
+        # wave Gimbal
+        wave_action = scene["Gimbal"].data.default_joint_pos.clone()
+        wave_action[:, :] = 0.01 * np.sin(2 * np.pi * 0.1 * sim_time)
+        scene["Gimbal"].set_joint_position_target(wave_action)
 
         scene.write_data_to_sim()
         sim.step()
@@ -192,9 +246,9 @@ def main():
     """Main function."""
     sim_cfg = sim_utils.SimulationCfg(device=args_cli.device)
     sim = sim_utils.SimulationContext(sim_cfg)
-    sim.set_camera_view([3.5, 0.0, 3.2], [0.0, 0.0, 0.5])
+    sim.set_camera_view([10.5, 10.0, 3.2], [0.0, 0.0, 0.5])
 
-    scene_cfg = NewRobotsSceneCfg(args_cli.num_envs, env_spacing=2.0)
+    scene_cfg = NewRobotsSceneCfg(args_cli.num_envs, env_spacing=20.0)
     scene = InteractiveScene(scene_cfg)
 
     sim.reset()

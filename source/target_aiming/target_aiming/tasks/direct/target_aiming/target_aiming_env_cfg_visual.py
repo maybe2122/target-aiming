@@ -1,6 +1,8 @@
 # Copyright (c) 2022-2025, The Isaac Lab Project Developers.
 # SPDX-License-Identifier: BSD-3-Clause
 
+"""Phase 2 VLA-RL 环境配置 — 支持 yaw/pitch/zoom 三轴控制。"""
+
 from __future__ import annotations
 
 import os
@@ -21,24 +23,30 @@ _PROJECT_ROOT = os.path.abspath(
 
 
 @configclass
-class TargetAimingEnvCfg(DirectRLEnvCfg):
-    """Target aiming with RGB observation: gimbal tracks a car and keeps it centered."""
+class TargetAimingVisualEnvCfg(DirectRLEnvCfg):
+    """VLA 在线 RL 微调环境配置。
 
-    decimation = 4
-    episode_length_s = 10.0
+    动作空间扩展为 3 维：[delta_yaw_vel, delta_pitch_vel, delta_zoom]
+    zoom 通过运行时修改相机 focal_length 实现（不需要机械变焦关节）。
+    """
 
-    # obs = flattened RGB (84*84*3) + yaw + pitch = 21170
-    # action = (delta_yaw, delta_pitch)
-    camera_width: int = 84
-    camera_height: int = 84
-    action_space = 2
-    observation_space = 84 * 84 * 3 + 2  # 21170
+    decimation = 2
+    episode_length_s = 15.0
+
+    # ---- 图像分辨率（SmolVLA 需要 224×224）----
+    camera_width: int = 224
+    camera_height: int = 224
+
+    # ---- 动作空间：yaw_vel, pitch_vel, zoom_delta ----
+    action_space = 3
+    # observation_space 不用于 VLA 模式（图像直接发给 VLA 服务）
+    observation_space = 0
     state_space = 0
 
     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=64, env_spacing=20.0, replicate_physics=True
+        num_envs=16, env_spacing=20.0, replicate_physics=True
     )
 
     # ---- Gimbal (robot) ----
@@ -60,24 +68,23 @@ class TargetAimingEnvCfg(DirectRLEnvCfg):
         ),
     )
 
-    # Car spawn randomization range (offset from default pos)
+    # Car spawn randomization range
     target_pos_range = {
         "x": (3.0, 10.0),
         "y": (-6.0, 6.0),
-        "z": (0.05, 0.05),  # car stays on ground
+        "z": (0.05, 0.05),
     }
 
-    # ---- TiledCamera on pitch_link (matches spawncargimbal.py) ----
+    # ---- TiledCamera（复用 spawncargimbal.py 验证过的参数）----
     tiled_camera_cfg: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Gimbal/pitch_link/camera",
-        update_period=0.0,  # update every sim step
-        height=84,
-        width=84,
+        update_period=0.0,
+        height=224,
+        width=224,
         data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(
-            focal_length=10.0,
-            focus_distance=400.0,
-            horizontal_aperture=40.0,
+            focal_length=12.0,          # 初始焦距，运行时动态修改
+            horizontal_aperture=20.955,
             clipping_range=(0.1, 50.0),
         ),
         offset=TiledCameraCfg.OffsetCfg(
@@ -87,24 +94,31 @@ class TargetAimingEnvCfg(DirectRLEnvCfg):
         ),
     )
 
-    # Pinhole intrinsics for geometric projection (reward computation only)
-    camera_focal_length: float = 10.0
-    camera_horizontal_aperture: float = 40.0
+    # ---- zoom 范围 ----
+    focal_length_min: float = 6.0     # 广角端
+    focal_length_max: float = 50.0    # 长焦端
+    focal_length_default: float = 12.0
 
-    # ---- Action ----
-    action_scale = 1.0
+    # ---- 动作缩放 ----
+    yaw_speed_scale: float = 1.0
+    pitch_speed_scale: float = 1.0
+    zoom_speed_scale: float = 2.0     # focal_length 每步最大变化量
 
-    # ---- Reward ----
-    rew_scale_pixel_error: float = -1.0
-    rew_scale_action_smooth: float = -0.01
-    rew_scale_success: float = 5.0
-    rew_scale_alive: float = 0.1
+    # ---- 奖励权重 ----
+    center_weight: float = 10.0
+    smooth_weight: float = 0.1
+    alive_weight: float = 0.5
+    zoom_weight: float = 2.0
+    zoom_smooth_weight: float = 0.05
+    target_ratio_ideal: float = 0.15  # 目标占画面面积理想比例
 
-    # pixel_error > max_pixel_error when target not visible → terminate
+    # ---- 终止条件 ----
     max_pixel_error: float = 0.95
-    # pixel_error < success_threshold → success bonus
-    success_threshold: float = 0.08
 
-    # ---- Initial joint randomization ----
+    # ---- VLA 服务 URL（同机部署用 127.0.0.1）----
+    vla_server_url: str = "http://127.0.0.1:8000"
+    vla_instruction: str = "Track the vehicle and keep it centered in frame."
+
+    # ---- 初始关节随机化 ----
     initial_yaw_range = (-0.5, 0.5)
     initial_pitch_range = (-0.3, 0.3)

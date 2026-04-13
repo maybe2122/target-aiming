@@ -1,7 +1,7 @@
 # Copyright (c) 2022-2025, The Isaac Lab Project Developers.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Phase-1 target aiming environment: coordinate-based observation, no camera rendering."""
+"""Target aiming environment: RGB image observation, yaw/pitch action output."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from collections.abc import Sequence
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.envs import DirectRLEnv
+from isaaclab.sensors import TiledCamera
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import sample_uniform
 
@@ -31,16 +32,15 @@ class TargetAimingEnv(DirectRLEnv):
         self._yaw_dof_idx, _ = self.gimbal.find_joints(self.cfg.yaw_dof_name)
         self._pitch_dof_idx, _ = self.gimbal.find_joints(self.cfg.pitch_dof_name)
 
-        # Virtual camera geometry (for geometric projection)
+        # Virtual camera geometry (for geometric projection used in reward)
         self._img_cx = self.cfg.camera_width / 2.0
         self._img_cy = self.cfg.camera_height / 2.0
         self._img_diag = (self.cfg.camera_width ** 2 + self.cfg.camera_height ** 2) ** 0.5
-        # focal_px = width * focal_length / horizontal_aperture
         self._focal_px = (
             self.cfg.camera_width * self.cfg.camera_focal_length / self.cfg.camera_horizontal_aperture
         )
 
-        # Runtime caches (filled in _compute_intermediate_values, used by dones/rewards/observations)
+        # Runtime caches
         self._pixel_error_normalized = torch.zeros(self.num_envs, device=self.device)
         self._target_visible = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._target_u = torch.zeros(self.num_envs, device=self.device)
@@ -53,28 +53,31 @@ class TargetAimingEnv(DirectRLEnv):
         # 1. Gimbal (Articulation)
         self.gimbal = Articulation(self.cfg.robot_cfg)
 
-        # 2. Target (static red sphere)
+        # 2. Car (target)
         self.target = RigidObject(self.cfg.target_cfg)
 
-        # 3. Ground plane + light
+        # 3. TiledCamera mounted on gimbal pitch_link
+        self.camera = TiledCamera(self.cfg.tiled_camera_cfg)
+
+        # 4. Ground plane + light
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
-        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+        light_cfg = sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-        # 4. Clone parallel environments
+        # 5. Clone parallel environments
         self.scene.clone_environments(copy_from_source=False)
         if self.device == "cpu":
             self.scene.filter_collisions(global_prim_paths=[])
 
-        # 5. Register assets
+        # 6. Register assets
         self.scene.articulations["gimbal"] = self.gimbal
         self.scene.rigid_objects["target"] = self.target
+        self.scene.sensors["camera"] = self.camera
 
     # ------------------------------------------------------------------
     # Action processing
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        # actions: (N, 2) in [-1, 1] → [Δyaw, Δpitch]
         self.actions = actions.clone()
 
     def _apply_action(self) -> None:
@@ -90,10 +93,9 @@ class TargetAimingEnv(DirectRLEnv):
         self.gimbal.set_joint_velocity_target(velocity_targets)
 
     # ------------------------------------------------------------------
-    # Intermediate computation (called once per step, before dones/rewards/obs)
+    # Intermediate computation (reward uses geometric projection)
     # ------------------------------------------------------------------
     def _compute_intermediate_values(self):
-        """Project target to virtual image plane and cache results."""
         u, v, visible = self._project_target_to_image()
         self._target_u = u
         self._target_v = v
@@ -108,10 +110,9 @@ class TargetAimingEnv(DirectRLEnv):
         )
 
     # ------------------------------------------------------------------
-    # Dones (called FIRST in the step — see DirectRLEnv.step)
+    # Dones
     # ------------------------------------------------------------------
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        # Compute intermediate values for this step (also used by rewards and obs)
         self._compute_intermediate_values()
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
@@ -122,7 +123,7 @@ class TargetAimingEnv(DirectRLEnv):
         return out_of_view, time_out
 
     # ------------------------------------------------------------------
-    # Rewards (called SECOND — uses cached intermediate values)
+    # Rewards
     # ------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
         return compute_rewards(
@@ -138,17 +139,19 @@ class TargetAimingEnv(DirectRLEnv):
         )
 
     # ------------------------------------------------------------------
-    # Observations (called LAST — uses cached intermediate values)
+    # Observations: RGB image + joint angles
     # ------------------------------------------------------------------
     def _get_observations(self) -> dict:
-        # Normalize u, v: center of image → 0, edge → ±1
-        u_norm = ((self._target_u - self._img_cx) / self._img_cx).clamp(-2.0, 2.0)
-        v_norm = ((self._target_v - self._img_cy) / self._img_cy).clamp(-2.0, 2.0)
+        # RGB from TiledCamera: (N, H, W, 4) uint8 → take RGB channels, normalize
+        rgb_raw = self.camera.data.output["rgb"]  # (N, H, W, 4) with alpha
+        rgb = rgb_raw[..., :3].float() / 255.0    # (N, H, W, 3) float [0, 1]
+        img_flat = rgb.reshape(self.num_envs, -1)  # (N, H*W*3)
 
-        yaw_pos = self.gimbal.data.joint_pos[:, self._yaw_dof_idx[0]]
-        pitch_pos = self.gimbal.data.joint_pos[:, self._pitch_dof_idx[0]]
+        # Joint angles
+        yaw = self.gimbal.data.joint_pos[:, self._yaw_dof_idx[0]].unsqueeze(-1)
+        pitch = self.gimbal.data.joint_pos[:, self._pitch_dof_idx[0]].unsqueeze(-1)
 
-        obs = torch.stack([u_norm, v_norm, yaw_pos, pitch_pos], dim=-1)  # (N, 4)
+        obs = torch.cat([img_flat, yaw, pitch], dim=-1)  # (N, H*W*3 + 2)
         return {"policy": obs}
 
     # ------------------------------------------------------------------
@@ -183,7 +186,7 @@ class TargetAimingEnv(DirectRLEnv):
         self.gimbal.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self.gimbal.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
-        # 2. Randomize target position
+        # 2. Randomize car position
         target_root_state = self.target.data.default_root_state[env_ids].clone()
         target_root_state[:, :3] += self.scene.env_origins[env_ids]
 
@@ -236,7 +239,7 @@ class TargetAimingEnv(DirectRLEnv):
 
 
 # ----------------------------------------------------------------------
-# Reward computation (JIT compiled — no self access)
+# Reward computation (JIT compiled)
 # ----------------------------------------------------------------------
 @torch.jit.script
 def compute_rewards(
@@ -256,7 +259,7 @@ def compute_rewards(
     # 2. Action smoothness penalty
     rew_smooth = rew_scale_action_smooth * torch.sum(actions ** 2, dim=-1)
 
-    # 3. Success reward (sparse)
+    # 3. Success reward (target centered)
     rew_success = rew_scale_success * (pixel_error < success_threshold).float()
 
     # 4. Alive reward (target in view)
