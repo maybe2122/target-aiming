@@ -8,7 +8,7 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(
     description="This script demonstrates adding a gimbal to an Isaac Lab environment."
 )
-parser.add_argument("--num_envs", type=int, default=50, help="Number of environments to spawn.")
+parser.add_argument("--num_envs", type=int, default=10, help="Number of environments to spawn.")
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -36,7 +36,7 @@ GIMBAL_CONFIG = ArticulationCfg(
         usd_path="assets/gimbal/gimbal.usd"
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 2.5),
+        pos=(0.0, 0.0, 0.0),
         rot=(1.0, 0.0, 0.0, 0.0),
         joint_pos={
             "yaw_joint": 0.0,
@@ -56,10 +56,10 @@ GIMBAL_CONFIG = ArticulationCfg(
 CAR_CONFIG = AssetBaseCfg(
     prim_path="{ENV_REGEX_NS}/Car",
     spawn=UsdFileCfg(
-        usd_path="/home/maybe/code/rl/target-aiming/assets/lam.usd",
+        usd_path="/home/sz/code/rl/target_aiming/assets/smallcar.usd",
     ),
     init_state=AssetBaseCfg.InitialStateCfg(
-        pos=(16.0, 0.0, 0.05),
+        pos=(3.5, 0.0, 0.0),
         rot=(1.0, 0.0, 0.0, 0.0),
     ),
 )
@@ -89,10 +89,10 @@ class SceneCfg(InteractiveSceneCfg):
         width=640,
         data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(
-            focal_length=14.0,
+            focal_length=18.0,
             focus_distance=400.0,
             horizontal_aperture=20.955,
-            clipping_range=(0.1, 50.0),
+            clipping_range=(0.1, 10.0),
         ),
         offset=CameraCfg.OffsetCfg(
             pos=(0.1, 0.0, 2.0),
@@ -164,7 +164,7 @@ def main():
     sim = sim_utils.SimulationContext(sim_cfg)
     sim.set_camera_view([10.5, 10.0, 3.2], [0.0, 0.0, 0.5])
 
-    scene_cfg = SceneCfg(args_cli.num_envs, env_spacing=50.0)
+    scene_cfg = SceneCfg(args_cli.num_envs, env_spacing=20.0)
     scene = InteractiveScene(scene_cfg)
 
     sim.reset()

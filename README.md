@@ -133,3 +133,29 @@ Some examples of packages that can likely be excluded are:
 "<path-to-isaac-sim>/extscache/omni.services.*"     // Services tools
 ...
 ```
+
+
+  # 先安装扩展包（如未安装）
+  pip install -e source/target_aiming
+
+  # 训练
+  python scripts/rsl_rl/train.py \
+    --task Template-Target-Aiming-Direct-v0 \
+    --num_envs 16 \
+    --enable_cameras \
+    --headless
+
+  参数说明：
+  - --task Template-Target-Aiming-Direct-v0 — __init__.py 中注册的环境 ID
+  - --enable_cameras — 必须，环境使用 TiledCamera 作为 RGB 观测
+  - --headless — 无显示器训练（有显示器可去掉）
+  - --num_envs 16 — 并行环境数，可按显存调整
+  - --max_iterations 3000 — 可选，覆盖 PPO 配置中的 1500
+
+  训练日志输出到： logs/rsl_rl/target_aiming_direct/
+
+  推理/回放：
+  python scripts/rsl_rl/play.py \
+    --task Template-Target-Aiming-Direct-v0 \
+    --num_envs 4 \
+    --enable_cameras

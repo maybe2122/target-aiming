@@ -3,7 +3,16 @@
 
 from isaaclab.utils import configclass
 
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlCNNModelCfg, RslRlMLPModelCfg, RslRlPpoAlgorithmCfg
+
+
+# Shared CNN configuration for the image encoder
+_CNN_CFG = RslRlCNNModelCfg.CNNCfg(
+    output_channels=[32, 64, 128],
+    kernel_size=[8, 4, 3],
+    stride=[4, 2, 2],
+    activation="elu",
+)
 
 
 @configclass
@@ -12,14 +21,30 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     max_iterations = 1500
     save_interval = 50
     experiment_name = "target_aiming_direct"
-    policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
-        actor_obs_normalization=True,
-        critic_obs_normalization=True,
-        actor_hidden_dims=[512, 256, 128],
-        critic_hidden_dims=[512, 256, 128],
+
+    # Map observation groups to actor and critic
+    obs_groups = {
+        "actor": ["image", "state"],
+        "critic": ["image", "state"],
+    }
+
+    actor = RslRlCNNModelCfg(
+        hidden_dims=[256, 128],
         activation="elu",
+        obs_normalization=True,
+        stochastic=True,
+        init_noise_std=1.0,
+        cnn_cfg=_CNN_CFG,
     )
+
+    critic = RslRlCNNModelCfg(
+        hidden_dims=[256, 128],
+        activation="elu",
+        obs_normalization=True,
+        stochastic=False,
+        cnn_cfg=_CNN_CFG,
+    )
+
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
@@ -33,4 +58,5 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=1.0,
+        share_cnn_encoders=True,
     )
