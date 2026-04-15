@@ -17,8 +17,8 @@ _CNN_CFG = RslRlCNNModelCfg.CNNCfg(
 
 @configclass
 class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 24
-    max_iterations = 1500
+    num_steps_per_env = 48
+    max_iterations = 10000
     save_interval = 50
     experiment_name = "target_aiming_direct"
 
@@ -31,16 +31,16 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     actor = RslRlCNNModelCfg(
         hidden_dims=[256, 128],
         activation="elu",
-        obs_normalization=True,
+        obs_normalization=False,
         stochastic=True,
-        init_noise_std=1.0,
+        init_noise_std=0.3,
         cnn_cfg=_CNN_CFG,
     )
 
     critic = RslRlCNNModelCfg(
         hidden_dims=[256, 128],
         activation="elu",
-        obs_normalization=True,
+        obs_normalization=False,
         stochastic=False,
         cnn_cfg=_CNN_CFG,
     )

@@ -38,7 +38,7 @@ class TargetAimingEnvCfg(DirectRLEnvCfg):
     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=16, env_spacing=20.0, replicate_physics=True
+        num_envs=16, env_spacing=12.0, replicate_physics=True
     )
 
     # ---- Gimbal (robot) ----
@@ -60,14 +60,14 @@ class TargetAimingEnvCfg(DirectRLEnvCfg):
             mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(2.5, 0.0, 0.0),
+            pos=(1.5, 0.0, 0.0),
             rot=(1.0, 0.0, 0.0, 0.0),
         ),
     )
 
     # Car spawn randomization range (offset from default pos)
     target_pos_range = {
-        "x": (2.0, 3.0),
+        "x": (1.0, 2.0),
         "y": (-2.0, 2.0),
         "z": (0.05, 0.05),  # car stays on ground
     }
@@ -83,10 +83,10 @@ class TargetAimingEnvCfg(DirectRLEnvCfg):
             focal_length=18.0,
             focus_distance=400.0,
             horizontal_aperture=20.955,
-            clipping_range=(0.1, 10.0),
+            clipping_range=(0.1, 8.0),
         ),
         offset=TiledCameraCfg.OffsetCfg(
-            pos=(0.1, 0.0, 2.0),
+            pos=(0.1, 0.0, 0.3),
             rot=(0.5, -0.5, 0.5, -0.5),
             convention="ros",
         ),
@@ -98,23 +98,17 @@ class TargetAimingEnvCfg(DirectRLEnvCfg):
 
     # ---- Action ----
     action_scale = 1.0
-    max_action_rad: float = 0.05236  # max delta per step in radians (~3 degrees)
+    max_action_rad: float = 0.1  # max velocity target in rad/s
 
     # ---- Reward ----
-    rew_scale_pixel_error: float = -1.0
+    rew_scale_pixel_error: float = -10.0
     rew_scale_action_smooth: float = -0.01
-    rew_scale_success: float = 5.0
-    rew_scale_alive: float = 0.1
+    rew_scale_success: float = 1.0
+    rew_scale_alive: float = 2.0
 
     # pixel_error > max_pixel_error when target not visible → terminate
     max_pixel_error: float = 0.95
     # pixel_error < success_threshold → success bonus
-    success_threshold: float = 0.08
+    success_threshold: float = 0.10
 
-    # ---- Initial joint randomization ----
-    initial_yaw_range = (-0.5, 0.5)
-    initial_pitch_range = (-0.3, 0.3)
 
-    # ---- Debug ----
-    show_debug_markers: bool = False  # scene markers (visible to camera, disable during training)
-    show_camera_feed: bool = False  # OpenCV window showing env-0 camera with HUD

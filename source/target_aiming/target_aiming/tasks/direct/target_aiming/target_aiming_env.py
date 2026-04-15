@@ -12,7 +12,6 @@ from collections.abc import Sequence
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.envs import DirectRLEnv
-from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.sensors import TiledCamera
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import sample_uniform
@@ -47,36 +46,6 @@ class TargetAimingEnv(DirectRLEnv):
         self._target_u = torch.zeros(self.num_envs, device=self.device)
         self._target_v = torch.zeros(self.num_envs, device=self.device)
 
-        # ---- Debug visualization markers (only during play, disabled for training) ----
-        if self.cfg.show_debug_markers:
-            # Target status: green = centered, yellow = in FOV, red = out of FOV
-            self._target_markers = VisualizationMarkers(VisualizationMarkersCfg(
-                prim_path="/Visuals/target_status",
-                markers={
-                    "centered": sim_utils.SphereCfg(
-                        radius=0.3,
-                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
-                    ),
-                    "in_fov": sim_utils.SphereCfg(
-                        radius=0.3,
-                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 1.0, 0.0)),
-                    ),
-                    "out_fov": sim_utils.SphereCfg(
-                        radius=0.3,
-                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
-                    ),
-                },
-            ))
-            # Camera aim point: blue sphere 10 m along camera forward
-            self._aim_markers = VisualizationMarkers(VisualizationMarkersCfg(
-                prim_path="/Visuals/aim_point",
-                markers={
-                    "aim": sim_utils.SphereCfg(
-                        radius=0.15,
-                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.4, 1.0)),
-                    ),
-                },
-            ))
 
     # ------------------------------------------------------------------
     # Scene setup
@@ -105,7 +74,7 @@ class TargetAimingEnv(DirectRLEnv):
 
         # 4. Ground plane + light (matched to validated spawncargimbal.py)
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg(size=(500.0, 500.0)))
-        light_cfg = sim_utils.DomeLightCfg(intensity=6000.0, color=(0.85, 0.75, 0.75))
+        light_cfg = sim_utils.DomeLightCfg(intensity=5000.0, color=(0.85, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
         # 5. Clone parallel environments (RigidBodyAPI is now on env_0/Car, will be replicated)
@@ -153,109 +122,6 @@ class TargetAimingEnv(DirectRLEnv):
             torch.ones_like(self._pixel_error_normalized),
         )
 
-        # Update debug markers (only during play)
-        if self.cfg.show_debug_markers:
-            self._update_debug_vis()
-
-    # ------------------------------------------------------------------
-    # Debug visualization
-    # ------------------------------------------------------------------
-    def _update_debug_vis(self):
-        """Draw markers: target status sphere + camera aim-point sphere."""
-        # 1. Target status sphere (above car)
-        target_pos = self.target.data.root_pos_w.clone()  # (N, 3)
-        target_pos[:, 2] += 1.0  # lift above car
-
-        centered = self._pixel_error_normalized < self.cfg.success_threshold  # green
-        in_fov = self._target_visible & ~centered                             # yellow
-        # remaining = out of FOV                                              # red
-
-        # marker_indices: 0=centered(green), 1=in_fov(yellow), 2=out_fov(red)
-        marker_idx = torch.full((self.num_envs,), 2, dtype=torch.int32, device=self.device)
-        marker_idx[in_fov] = 1
-        marker_idx[centered] = 0
-
-        self._target_markers.visualize(translations=target_pos, marker_indices=marker_idx)
-
-        # 2. Aim-point sphere (10 m along camera forward direction)
-        cur_yaw = self.gimbal.data.joint_pos[:, self._yaw_dof_idx[0]]
-        cur_pitch = self.gimbal.data.joint_pos[:, self._pitch_dof_idx[0]]
-        gimbal_pos = self.gimbal.data.root_pos_w  # (N, 3)
-
-        aim_dist = 10.0
-        aim_pos = gimbal_pos.clone()
-        aim_pos[:, 0] += aim_dist * torch.cos(cur_yaw) * torch.cos(cur_pitch)
-        aim_pos[:, 1] += aim_dist * torch.sin(cur_yaw) * torch.cos(cur_pitch)
-        aim_pos[:, 2] += aim_dist * torch.sin(cur_pitch)
-
-        self._aim_markers.visualize(translations=aim_pos)
-
-        # 3. OpenCV camera feed window (env 0)
-        if self.cfg.show_camera_feed:
-            self._render_camera_feed()
-
-    def _render_camera_feed(self):
-        """Show env-0 camera image with crosshair, target dot, and HUD via matplotlib."""
-        import numpy as np
-        import matplotlib.pyplot as plt
-        import matplotlib.patches as patches
-
-        rgb_raw = self.camera.data.output.get("rgb")
-        if rgb_raw is None:
-            return
-
-        img = rgb_raw[0, :, :, :3].cpu().numpy().astype(np.uint8)
-        h, w = img.shape[:2]
-        cx, cy = w / 2.0, h / 2.0
-
-        # Lazy-init matplotlib figure
-        if not hasattr(self, "_fig"):
-            plt.ion()
-            self._fig, self._ax = plt.subplots(1, 1, figsize=(6, 6))
-            self._im = self._ax.imshow(img)
-            # Static crosshair
-            self._ax.axhline(cy, color="lime", linewidth=0.8, linestyle="--")
-            self._ax.axvline(cx, color="lime", linewidth=0.8, linestyle="--")
-            cross_r = min(w, h) * 0.15
-            self._cross_circle = patches.Circle((cx, cy), cross_r, fill=False, edgecolor="lime", linewidth=0.8)
-            self._ax.add_patch(self._cross_circle)
-            # Dynamic elements
-            self._target_dot, = self._ax.plot([], [], "ro", markersize=6)
-            self._target_line, = self._ax.plot([], [], "r-", linewidth=0.8)
-            self._hud_text = self._ax.text(
-                2, 5, "", fontsize=9, color="white", fontweight="bold",
-                verticalalignment="top", bbox=dict(facecolor="black", alpha=0.6, pad=2),
-            )
-            self._ax.set_xlim(0, w)
-            self._ax.set_ylim(h, 0)
-            self._ax.set_axis_off()
-            self._fig.tight_layout(pad=0)
-            self._fig.show()
-
-        # Update image
-        self._im.set_data(img)
-
-        # Update target dot + line
-        u = self._target_u[0].item()
-        v = self._target_v[0].item()
-        visible = self._target_visible[0].item()
-        if visible:
-            self._target_dot.set_data([u], [v])
-            self._target_line.set_data([cx, u], [cy, v])
-        else:
-            self._target_dot.set_data([], [])
-            self._target_line.set_data([], [])
-
-        # Update HUD
-        err = self._pixel_error_normalized[0].item()
-        status = "CENTERED" if err < self.cfg.success_threshold else ("IN FOV" if visible else "LOST")
-        yaw = self.gimbal.data.joint_pos[0, self._yaw_dof_idx[0]].item()
-        pitch = self.gimbal.data.joint_pos[0, self._pitch_dof_idx[0]].item()
-        self._hud_text.set_text(f"{status}  err={err:.3f}\nyaw={yaw:.2f}  pitch={pitch:.2f}")
-        self._hud_text.set_color("lime" if status == "CENTERED" else ("yellow" if status == "IN FOV" else "red"))
-
-        self._fig.canvas.draw_idle()
-        self._fig.canvas.flush_events()
 
     # ------------------------------------------------------------------
     # Dones
@@ -310,77 +176,118 @@ class TargetAimingEnv(DirectRLEnv):
             env_ids = self.gimbal._ALL_INDICES
         super()._reset_idx(env_ids)
 
-        # 1. Reset gimbal joint state
-        joint_pos = self.gimbal.data.default_joint_pos[env_ids].clone()
-        joint_vel = self.gimbal.data.default_joint_vel[env_ids].clone()
+        n = len(env_ids)
 
-        joint_pos[:, self._yaw_dof_idx[0]] += sample_uniform(
-            self.cfg.initial_yaw_range[0],
-            self.cfg.initial_yaw_range[1],
-            (len(env_ids),),
-            joint_pos.device,
-        )
-        joint_pos[:, self._pitch_dof_idx[0]] += sample_uniform(
-            self.cfg.initial_pitch_range[0],
-            self.cfg.initial_pitch_range[1],
-            (len(env_ids),),
-            joint_pos.device,
-        )
-
-        default_root_state = self.gimbal.data.default_root_state[env_ids].clone()
-        default_root_state[:, :3] += self.scene.env_origins[env_ids]
-
-        self.gimbal.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
-        self.gimbal.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
-        self.gimbal.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
-
-        # 2. Randomize car position
+        # 1. Randomize car position first
         target_root_state = self.target.data.default_root_state[env_ids].clone()
         target_root_state[:, :3] += self.scene.env_origins[env_ids]
 
         target_root_state[:, 0] += sample_uniform(
             self.cfg.target_pos_range["x"][0],
             self.cfg.target_pos_range["x"][1],
-            (len(env_ids),), self.device,
+            (n,), self.device,
         )
         target_root_state[:, 1] += sample_uniform(
             self.cfg.target_pos_range["y"][0],
             self.cfg.target_pos_range["y"][1],
-            (len(env_ids),), self.device,
+            (n,), self.device,
         )
         target_root_state[:, 2] = sample_uniform(
             self.cfg.target_pos_range["z"][0],
             self.cfg.target_pos_range["z"][1],
-            (len(env_ids),), self.device,
+            (n,), self.device,
         )
 
         self.target.write_root_pose_to_sim(target_root_state[:, :7], env_ids)
         self.target.write_root_velocity_to_sim(target_root_state[:, 7:], env_ids)
 
+        # 2. Reset gimbal: point at car, then add small random offset
+        default_root_state = self.gimbal.data.default_root_state[env_ids].clone()
+        default_root_state[:, :3] += self.scene.env_origins[env_ids]
+        gimbal_pos = default_root_state[:, :3]
+
+        # Compute yaw to aim at the car
+        delta = target_root_state[:, :3] - gimbal_pos
+        dx, dy = delta[:, 0], delta[:, 1]
+        dist_xy = torch.sqrt(dx ** 2 + dy ** 2).clamp(min=1e-6)
+        aim_yaw = torch.atan2(dy, dx)
+
+        # Compute pitch to look down at the car from camera height
+        # pitch_joint > 0 = camera looks DOWN (URDF pitch axis = +Y, right-hand rule)
+        # Camera is 2m above gimbal root on a rotating arm, so we scale by 0.7
+        # to compensate for the arm shifting the camera position when pitching
+        camera_height = self.cfg.tiled_camera_cfg.offset.pos[2]  # 2.0m
+        aim_pitch = torch.atan2(torch.tensor(camera_height, device=self.device), dist_xy) * 0.7
+
+        # Small random offset for yaw (within 30% of half-FOV)
+        half_fov = math.atan(self.cfg.camera_horizontal_aperture / (2.0 * self.cfg.camera_focal_length))
+        yaw_offset = half_fov * 0.3
+
+        joint_pos = self.gimbal.data.default_joint_pos[env_ids].clone()
+        joint_vel = self.gimbal.data.default_joint_vel[env_ids].clone()
+
+        joint_pos[:, self._yaw_dof_idx[0]] = aim_yaw + sample_uniform(
+            -yaw_offset, yaw_offset, (n,), joint_pos.device,
+        )
+        joint_pos[:, self._pitch_dof_idx[0]] = aim_pitch + sample_uniform(
+            -0.05, 0.05, (n,), joint_pos.device,
+        )
+
+        self.gimbal.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
+        self.gimbal.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
+        self.gimbal.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+
     # ------------------------------------------------------------------
     # Utility: project target 3D position to virtual image plane
     # ------------------------------------------------------------------
     def _project_target_to_image(self):
-        """Return target pixel coords (u, v) and visibility mask via geometric projection."""
+        """Return target pixel coords (u, v) and visibility mask.
+
+        Uses full pinhole projection from the actual camera world position
+        and orientation, accounting for the 2m arm offset on pitch_link.
+
+        Camera basis vectors (derived from URDF + camera quaternion):
+            forward = Rz(yaw) * Ry(pitch) * [1, 0, 0]
+            right   = Rz(yaw) * [0, -1, 0]
+            up      = Rz(yaw) * Ry(pitch) * [0, 0, 1]
+        """
         target_pos_w = self.target.data.root_pos_w   # (N, 3)
         gimbal_pos_w = self.gimbal.data.root_pos_w   # (N, 3)
-
-        delta = target_pos_w - gimbal_pos_w           # (N, 3)
-        dx, dy, dz = delta[:, 0], delta[:, 1], delta[:, 2]
-
-        dist_xy = torch.sqrt(dx ** 2 + dy ** 2).clamp(min=1e-6)
-
-        target_yaw = torch.atan2(dy, dx)
-        target_pitch = torch.atan2(dz, dist_xy)
 
         cur_yaw = self.gimbal.data.joint_pos[:, self._yaw_dof_idx[0]]
         cur_pitch = self.gimbal.data.joint_pos[:, self._pitch_dof_idx[0]]
 
-        u = self._img_cx + (target_yaw - cur_yaw) * self._focal_px
-        v = self._img_cy - (target_pitch - cur_pitch) * self._focal_px
+        cos_y, sin_y = torch.cos(cur_yaw), torch.sin(cur_yaw)
+        cos_p, sin_p = torch.cos(cur_pitch), torch.sin(cur_pitch)
+
+        # Camera offset in pitch_link frame: (0.1, 0, 0.1)
+        # After Ry(pitch): arm_x = 0.1*cos_p + 0.1*sin_p,  arm_z = -0.1*sin_p + 0.1*cos_p
+        # Joint offsets along Z: yaw_joint 0.075 + pitch_joint 0.1 = 0.175
+        cam_offset_x = 0.1 * cos_p + 0.1 * sin_p      # in yaw-rotated XY plane
+        cam_offset_z = -0.1 * sin_p + 0.1 * cos_p + 0.175
+
+        cam_x = gimbal_pos_w[:, 0] + cos_y * cam_offset_x
+        cam_y = gimbal_pos_w[:, 1] + sin_y * cam_offset_x
+        cam_z = gimbal_pos_w[:, 2] + cam_offset_z
+
+        # Vector from camera to target
+        dx = target_pos_w[:, 0] - cam_x
+        dy = target_pos_w[:, 1] - cam_y
+        dz = target_pos_w[:, 2] - cam_z
+
+        # Project onto camera basis vectors
+        d_forward = dx * cos_y * cos_p + dy * sin_y * cos_p - dz * sin_p
+        d_right   = dx * sin_y         - dy * cos_y
+        d_up      = dx * cos_y * sin_p + dy * sin_y * sin_p + dz * cos_p
+
+        # Pinhole projection
+        d_forward_safe = d_forward.clamp(min=1e-6)
+        u = self._img_cx + self._focal_px * d_right / d_forward_safe
+        v = self._img_cy - self._focal_px * d_up / d_forward_safe
 
         visible = (
-            (u >= 0) & (u < self.cfg.camera_width)
+            (d_forward > 0)
+            & (u >= 0) & (u < self.cfg.camera_width)
             & (v >= 0) & (v < self.cfg.camera_height)
         )
         return u, v, visible
@@ -400,7 +307,7 @@ def compute_rewards(
     actions: torch.Tensor,           # (N, 2)
     target_visible: torch.Tensor,    # (N,) bool
     reset_terminated: torch.Tensor,  # (N,) bool
-) -> torch.Tensor:
+    ) -> torch.Tensor:
     # 1. Pixel error penalty (main signal)
     rew_pixel = rew_scale_pixel_error * pixel_error
 
