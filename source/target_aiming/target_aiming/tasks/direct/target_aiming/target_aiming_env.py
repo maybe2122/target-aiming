@@ -41,10 +41,12 @@ class TargetAimingEnv(DirectRLEnv):
         )
 
         # Runtime caches
+        # Runtime caches
         self._pixel_error_normalized = torch.zeros(self.num_envs, device=self.device)
+        self._prev_pixel_error = torch.zeros(self.num_envs, device=self.device)
         self._target_visible = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._target_u = torch.zeros(self.num_envs, device=self.device)
-        self._target_v = torch.zeros(self.num_envs, device=self.device)
+       
 
 
     # ------------------------------------------------------------------
@@ -109,6 +111,9 @@ class TargetAimingEnv(DirectRLEnv):
     # Intermediate computation (reward uses geometric projection)
     # ------------------------------------------------------------------
     def _compute_intermediate_values(self):
+        # save previous error
+        self._prev_pixel_error = self._pixel_error_normalized.clone()
+
         u, v, visible = self._project_target_to_image()
         self._target_u = u
         self._target_v = v
@@ -147,11 +152,11 @@ class TargetAimingEnv(DirectRLEnv):
             self.cfg.rew_scale_alive,
             self.cfg.success_threshold,
             self._pixel_error_normalized,
+            self._prev_pixel_error,
             self.actions,
             self._target_visible,
             self.reset_terminated,
         )
-
     # ------------------------------------------------------------------
     # Observations: RGB image + joint angles
     # ------------------------------------------------------------------
@@ -303,21 +308,24 @@ def compute_rewards(
     rew_scale_success: float,
     rew_scale_alive: float,
     success_threshold: float,
-    pixel_error: torch.Tensor,      # (N,) normalized [0, 1]
-    actions: torch.Tensor,           # (N, 2)
-    target_visible: torch.Tensor,    # (N,) bool
-    reset_terminated: torch.Tensor,  # (N,) bool
+    pixel_error: torch.Tensor,
+    prev_pixel_error: torch.Tensor,
+    actions: torch.Tensor,
+    target_visible: torch.Tensor,
+    reset_terminated: torch.Tensor,
 ) -> torch.Tensor:
-    # 1. Pixel error penalty (main signal)
-    rew_pixel = rew_scale_pixel_error * pixel_error
 
-    # 2. Action smoothness penalty
+    # error improvement reward
+    error_delta = prev_pixel_error - pixel_error
+    rew_pixel = rew_scale_pixel_error * error_delta
+
+    # smooth
     rew_smooth = rew_scale_action_smooth * torch.sum(actions ** 2, dim=-1)
 
-    # 3. Success reward (target centered)
+    # success
     rew_success = rew_scale_success * (pixel_error < success_threshold).float()
 
-    # 4. Alive reward (target in view)
+    # alive
     rew_alive = rew_scale_alive * target_visible.float() * (1.0 - reset_terminated.float())
 
     return rew_pixel + rew_smooth + rew_success + rew_alive

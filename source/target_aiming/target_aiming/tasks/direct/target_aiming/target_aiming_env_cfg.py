@@ -101,10 +101,10 @@ class TargetAimingEnvCfg(DirectRLEnvCfg):
     max_action_rad: float = 0.1  # max velocity target in rad/s
 
     # ---- Reward ----
-    rew_scale_pixel_error: float = -10.0
+    rew_scale_pixel_error: float = 10.0
     rew_scale_action_smooth: float = -0.01
-    rew_scale_success: float = 1.0
-    rew_scale_alive: float = 2.0
+    rew_scale_success: float = 5.0
+    rew_scale_alive: float = 0.1
 
     # pixel_error > max_pixel_error when target not visible → terminate
     max_pixel_error: float = 0.95
