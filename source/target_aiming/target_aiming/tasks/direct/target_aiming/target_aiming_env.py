@@ -46,6 +46,17 @@ class TargetAimingEnv(DirectRLEnv):
         self._prev_pixel_error = torch.zeros(self.num_envs, device=self.device)
         self._target_visible = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._target_u = torch.zeros(self.num_envs, device=self.device)
+        self._is_idle = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+        # Discrete action mapping: 0=left, 1=right, 2=up, 3=down, 4=stay
+        step = self.cfg.fixed_step_rad
+        self._action_map = torch.tensor([
+            [+step, 0.0],   # 0: left  (yaw+)
+            [-step, 0.0],   # 1: right (yaw-)
+            [0.0, +step],   # 2: up    (pitch+)
+            [0.0, -step],   # 3: down  (pitch-)
+            [0.0,  0.0],    # 4: stay
+        ], device=self.device)
        
 
 
@@ -93,7 +104,10 @@ class TargetAimingEnv(DirectRLEnv):
     # Action processing
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        self.actions = actions.clone().clamp(-self.cfg.max_action_rad, self.cfg.max_action_rad)
+        # actions: (N, 5) one-hot encoded discrete actions
+        action_indices = actions.argmax(dim=-1)  # (N,)
+        self.actions = self._action_map[action_indices]  # (N, 2) -> (yaw_vel, pitch_vel)
+        self._is_idle = (action_indices == 4)  # True when agent chose "stay"
 
     def _apply_action(self) -> None:
         velocity_targets = torch.zeros(
@@ -150,10 +164,12 @@ class TargetAimingEnv(DirectRLEnv):
             self.cfg.rew_scale_action_smooth,
             self.cfg.rew_scale_success,
             self.cfg.rew_scale_alive,
+            self.cfg.rew_scale_idle,
             self.cfg.success_threshold,
             self._pixel_error_normalized,
             self._prev_pixel_error,
             self.actions,
+            self._is_idle,
             self._target_visible,
             self.reset_terminated,
         )
@@ -224,9 +240,9 @@ class TargetAimingEnv(DirectRLEnv):
         camera_height = self.cfg.tiled_camera_cfg.offset.pos[2]  # 2.0m
         aim_pitch = torch.atan2(torch.tensor(camera_height, device=self.device), dist_xy) * 0.7
 
-        # Small random offset for yaw (within 30% of half-FOV)
+        # Random offset for yaw (within 80% of half-FOV so target is usually off-center)
         half_fov = math.atan(self.cfg.camera_horizontal_aperture / (2.0 * self.cfg.camera_focal_length))
-        yaw_offset = half_fov * 0.3
+        yaw_offset = half_fov * 0.8
 
         joint_pos = self.gimbal.data.default_joint_pos[env_ids].clone()
         joint_vel = self.gimbal.data.default_joint_vel[env_ids].clone()
@@ -235,7 +251,7 @@ class TargetAimingEnv(DirectRLEnv):
             -yaw_offset, yaw_offset, (n,), joint_pos.device,
         )
         joint_pos[:, self._pitch_dof_idx[0]] = aim_pitch + sample_uniform(
-            -0.05, 0.05, (n,), joint_pos.device,
+            -0.15, 0.15, (n,), joint_pos.device,
         )
 
         self.gimbal.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
@@ -307,10 +323,12 @@ def compute_rewards(
     rew_scale_action_smooth: float,
     rew_scale_success: float,
     rew_scale_alive: float,
+    rew_scale_idle: float,
     success_threshold: float,
     pixel_error: torch.Tensor,
     prev_pixel_error: torch.Tensor,
     actions: torch.Tensor,
+    is_idle: torch.Tensor,
     target_visible: torch.Tensor,
     reset_terminated: torch.Tensor,
 ) -> torch.Tensor:
@@ -328,4 +346,8 @@ def compute_rewards(
     # alive
     rew_alive = rew_scale_alive * target_visible.float() * (1.0 - reset_terminated.float())
 
-    return rew_pixel + rew_smooth + rew_success + rew_alive
+    # idle penalty: penalize staying still when target is not centered
+    not_centered = (pixel_error > success_threshold).float()
+    rew_idle = rew_scale_idle * is_idle.float() * not_centered
+
+    return rew_pixel + rew_smooth + rew_success + rew_alive + rew_idle

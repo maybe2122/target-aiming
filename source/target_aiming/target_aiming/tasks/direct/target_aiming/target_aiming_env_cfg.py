@@ -28,10 +28,10 @@ class TargetAimingEnvCfg(DirectRLEnvCfg):
     episode_length_s = 10.0 #10s
 
     # obs = {"image": (3,256,256), "state": (2,)}
-    # action = (delta_yaw, delta_pitch)
+    # action = discrete index: 0=left, 1=right, 2=up, 3=down, 4=stay
     camera_width: int = 256
     camera_height: int = 256
-    action_space = 2
+    action_space = 5
     observation_space = {"image": [3, 256, 256], "state": 2}
     state_space = 0
 
@@ -98,13 +98,14 @@ class TargetAimingEnvCfg(DirectRLEnvCfg):
 
     # ---- Action ----
     action_scale = 1.0
-    max_action_rad: float = 0.1  # max velocity target in rad/s
+    fixed_step_rad: float = 0.03  # fixed angular velocity per discrete action (rad/s)
 
     # ---- Reward ----
     rew_scale_pixel_error: float = 10.0
     rew_scale_action_smooth: float = -0.01
     rew_scale_success: float = 5.0
     rew_scale_alive: float = 0.1
+    rew_scale_idle: float = -1.0  # penalty for staying still when target not centered
 
     # pixel_error > max_pixel_error when target not visible → terminate
     max_pixel_error: float = 0.95
