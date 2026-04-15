@@ -8,12 +8,11 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlCNNModelCfg, RslRlML
 
 # Shared CNN configuration for the image encoder
 _CNN_CFG = RslRlCNNModelCfg.CNNCfg(
-    output_channels=[32, 64, 128],
-    kernel_size=[8, 4, 3],
-    stride=[4, 2, 2],
+    output_channels=[32,64,128,256,256],
+    kernel_size=[8,4,3,3,3],
+    stride=[4,2,2,2,1],
     activation="elu",
 )
-
 
 @configclass
 class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
@@ -38,7 +37,7 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     )
 
     critic = RslRlCNNModelCfg(
-        hidden_dims=[256, 128],
+        hidden_dims=[512,256, 128],
         activation="elu",
         obs_normalization=False,
         stochastic=False,
@@ -52,7 +51,7 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         entropy_coef=0.005,
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=3.0e-4,
+        learning_rate=1.0e-4,
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,

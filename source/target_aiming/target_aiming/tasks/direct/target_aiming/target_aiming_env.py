@@ -74,7 +74,7 @@ class TargetAimingEnv(DirectRLEnv):
 
         # 4. Ground plane + light (matched to validated spawncargimbal.py)
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg(size=(500.0, 500.0)))
-        light_cfg = sim_utils.DomeLightCfg(intensity=5000.0, color=(0.85, 0.75, 0.75))
+        light_cfg = sim_utils.DomeLightCfg(intensity=6000.0, color=(0.85, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
         # 5. Clone parallel environments (RigidBodyAPI is now on env_0/Car, will be replicated)
@@ -260,11 +260,11 @@ class TargetAimingEnv(DirectRLEnv):
         cos_y, sin_y = torch.cos(cur_yaw), torch.sin(cur_yaw)
         cos_p, sin_p = torch.cos(cur_pitch), torch.sin(cur_pitch)
 
-        # Camera offset in pitch_link frame: (0.1, 0, 0.1)
-        # After Ry(pitch): arm_x = 0.1*cos_p + 0.1*sin_p,  arm_z = -0.1*sin_p + 0.1*cos_p
+        # Camera offset in pitch_link frame: (0.1, 0, 2.0)
+        # After Ry(pitch): arm_x = 0.1*cos_p + 2.0*sin_p,  arm_z = -0.1*sin_p + 2.0*cos_p
         # Joint offsets along Z: yaw_joint 0.075 + pitch_joint 0.1 = 0.175
-        cam_offset_x = 0.1 * cos_p + 0.1 * sin_p      # in yaw-rotated XY plane
-        cam_offset_z = -0.1 * sin_p + 0.1 * cos_p + 0.175
+        cam_offset_x = 0.1 * cos_p + 2.0 * sin_p      # in yaw-rotated XY plane
+        cam_offset_z = -0.1 * sin_p + 2.0 * cos_p + 0.175
 
         cam_x = gimbal_pos_w[:, 0] + cos_y * cam_offset_x
         cam_y = gimbal_pos_w[:, 1] + sin_y * cam_offset_x
@@ -307,7 +307,7 @@ def compute_rewards(
     actions: torch.Tensor,           # (N, 2)
     target_visible: torch.Tensor,    # (N,) bool
     reset_terminated: torch.Tensor,  # (N,) bool
-    ) -> torch.Tensor:
+) -> torch.Tensor:
     # 1. Pixel error penalty (main signal)
     rew_pixel = rew_scale_pixel_error * pixel_error
 

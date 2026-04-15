@@ -27,12 +27,12 @@ class TargetAimingEnvCfg(DirectRLEnvCfg):
     decimation = 4
     episode_length_s = 10.0 #10s
 
-    # obs = {"image": (3,128,128), "state": (2,)}
+    # obs = {"image": (3,256,256), "state": (2,)}
     # action = (delta_yaw, delta_pitch)
-    camera_width: int = 128
-    camera_height: int = 128
+    camera_width: int = 256
+    camera_height: int = 256
     action_space = 2
-    observation_space = {"image": [3, 128, 128], "state": 2}
+    observation_space = {"image": [3, 256, 256], "state": 2}
     state_space = 0
 
     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
@@ -76,8 +76,8 @@ class TargetAimingEnvCfg(DirectRLEnvCfg):
     tiled_camera_cfg: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Gimbal/pitch_link/camera",
         update_period=0.0,  # update every sim step
-        height=128,
-        width=128,
+        height=256,
+        width=256,
         data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=18.0,
