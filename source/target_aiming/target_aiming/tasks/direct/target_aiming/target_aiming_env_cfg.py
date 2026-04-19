@@ -38,7 +38,7 @@ class TargetAimingEnvCfg(DirectRLEnvCfg):
     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=16, env_spacing=12.0, replicate_physics=True
+        num_envs=128, env_spacing=12.0, replicate_physics=True
     )
 
     # ---- Gimbal (robot) ----
@@ -97,19 +97,33 @@ class TargetAimingEnvCfg(DirectRLEnvCfg):
     camera_horizontal_aperture: float = 20.955
 
     # ---- Action ----
-    action_scale = 1.0
-    fixed_step_rad: float = 0.03  # fixed angular velocity per discrete action (rad/s)
+    # action_scale = 1 / (decimation * sim.dt) so fixed_step_rad behaves as
+    # per-policy-step angle increment (rad) rather than rad/s.
+    action_scale = 30.0
+    fixed_step_rad: float = 0.03  # per-policy-step angle increment (rad)
 
     # ---- Reward ----
-    rew_scale_pixel_error: float = 10.0
-    rew_scale_action_smooth: float = -0.01
-    rew_scale_success: float = 5.0
-    rew_scale_alive: float = 0.1
-    rew_scale_idle: float = -1.0  # penalty for staying still when target not centered
+    # All scales shrunk 10× vs. prior version: prior run blew up the value
+    # function (vloss 246→1341→163, RMSE≈37 on returns ~100) which triggered
+    # a one-step entropy collapse. Smaller returns → tighter value fit →
+    # stable advantages → no sudden policy gradient spikes.
+    # Absolute pixel-centering shaping (always dense while target visible).
+    rew_scale_pixel_center: float = 0.05
+    # Delta improvement (clipped inside compute_rewards to ±0.1).
+    rew_scale_pixel_error: float = 0.5
+    # Discrete actions all have identical L2 norm → smooth penalty is meaningless.
+    rew_scale_action_smooth: float = 0.0
+    # Per-step success bonus kept small to avoid bimodal returns that break value fit.
+    rew_scale_success: float = 0.1
+    rew_scale_alive: float = 0.01
+    # Idle penalty was ~30× the pixel signal and dominated learning; disabled.
+    rew_scale_idle: float = 0.0
 
-    # pixel_error > max_pixel_error when target not visible → terminate
-    max_pixel_error: float = 0.95
-    # pixel_error < success_threshold → success bonus
-    success_threshold: float = 0.10
+    # Legacy threshold kept for reference; termination now uses invisible_grace_steps.
+    max_pixel_error: float = 2.0
+    # pixel_error < success_threshold → success bonus (loosened to give early signal).
+    success_threshold: float = 0.15
+    # Terminate only after this many consecutive invisible steps.
+    invisible_grace_steps: int = 10
 
 

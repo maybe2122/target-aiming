@@ -145,6 +145,12 @@ Some examples of packages that can likely be excluded are:
     --enable_cameras \
     --headless
 
+   python scripts/rsl_rl/train.py \
+    --task Template-Target-Aiming-Direct-v0 \
+    --num_envs 64 \
+    --enable_cameras
+
+
   参数说明：
   - --task Template-Target-Aiming-Direct-v0 — __init__.py 中注册的环境 ID
   - --enable_cameras — 必须，环境使用 TiledCamera 作为 RGB 观测

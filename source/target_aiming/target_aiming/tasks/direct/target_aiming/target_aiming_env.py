@@ -47,6 +47,8 @@ class TargetAimingEnv(DirectRLEnv):
         self._target_visible = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._target_u = torch.zeros(self.num_envs, device=self.device)
         self._is_idle = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # Counts consecutive steps the target has been out of view (reset on visibility).
+        self._invisible_counter = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
         # Discrete action mapping: 0=left, 1=right, 2=up, 3=down, 4=stay
         step = self.cfg.fixed_step_rad
@@ -141,6 +143,13 @@ class TargetAimingEnv(DirectRLEnv):
             torch.ones_like(self._pixel_error_normalized),
         )
 
+        # Track consecutive invisible steps for grace-period termination.
+        self._invisible_counter = torch.where(
+            visible,
+            torch.zeros_like(self._invisible_counter),
+            self._invisible_counter + 1,
+        )
+
 
     # ------------------------------------------------------------------
     # Dones
@@ -149,10 +158,7 @@ class TargetAimingEnv(DirectRLEnv):
         self._compute_intermediate_values()
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        out_of_view = (
-            ~self._target_visible
-            & (self._pixel_error_normalized > self.cfg.max_pixel_error)
-        )
+        out_of_view = self._invisible_counter > self.cfg.invisible_grace_steps
         return out_of_view, time_out
 
     # ------------------------------------------------------------------
@@ -160,6 +166,7 @@ class TargetAimingEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
         return compute_rewards(
+            self.cfg.rew_scale_pixel_center,
             self.cfg.rew_scale_pixel_error,
             self.cfg.rew_scale_action_smooth,
             self.cfg.rew_scale_success,
@@ -233,12 +240,15 @@ class TargetAimingEnv(DirectRLEnv):
         dist_xy = torch.sqrt(dx ** 2 + dy ** 2).clamp(min=1e-6)
         aim_yaw = torch.atan2(dy, dx)
 
-        # Compute pitch to look down at the car from camera height
-        # pitch_joint > 0 = camera looks DOWN (URDF pitch axis = +Y, right-hand rule)
-        # Camera is 2m above gimbal root on a rotating arm, so we scale by 0.7
-        # to compensate for the arm shifting the camera position when pitching
-        camera_height = self.cfg.tiled_camera_cfg.offset.pos[2]  # 2.0m
-        aim_pitch = torch.atan2(torch.tensor(camera_height, device=self.device), dist_xy) * 0.7
+        # Compute pitch so the short camera arm (≤ 0.5m here) looks at the car.
+        # URDF puts pitch_link 0.175m above gimbal root (yaw_joint 0.075 + pitch_joint 0.1);
+        # the TiledCamera offset adds another offset.pos.z on top.
+        # With a short arm the simple right-triangle aim is accurate enough — no fudge needed.
+        pitch_link_z = 0.175
+        cam_z_from_gimbal = pitch_link_z + self.cfg.tiled_camera_cfg.offset.pos[2]
+        cam_z_tensor = torch.tensor(cam_z_from_gimbal, device=self.device)
+        target_z = target_root_state[:, 2]
+        aim_pitch = torch.atan2(cam_z_tensor - target_z, dist_xy)
 
         # Random offset for yaw (within 80% of half-FOV so target is usually off-center)
         half_fov = math.atan(self.cfg.camera_horizontal_aperture / (2.0 * self.cfg.camera_focal_length))
@@ -257,6 +267,21 @@ class TargetAimingEnv(DirectRLEnv):
         self.gimbal.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
         self.gimbal.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self.gimbal.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+
+        # Recompute projection with the new gimbal/target state and sync caches so
+        # the first reward after reset uses a consistent prev/current pair
+        # (otherwise pixel_error would spike from the old episode's value).
+        u, v, visible = self._project_target_to_image()
+        pixel_dist = torch.sqrt((u - self._img_cx) ** 2 + (v - self._img_cy) ** 2)
+        fresh_error = torch.where(
+            visible,
+            pixel_dist / self._img_diag,
+            torch.ones_like(u),
+        )
+        self._pixel_error_normalized[env_ids] = fresh_error[env_ids]
+        self._prev_pixel_error[env_ids] = fresh_error[env_ids]
+        self._target_visible[env_ids] = visible[env_ids]
+        self._invisible_counter[env_ids] = 0
 
     # ------------------------------------------------------------------
     # Utility: project target 3D position to virtual image plane
@@ -281,11 +306,18 @@ class TargetAimingEnv(DirectRLEnv):
         cos_y, sin_y = torch.cos(cur_yaw), torch.sin(cur_yaw)
         cos_p, sin_p = torch.cos(cur_pitch), torch.sin(cur_pitch)
 
-        # Camera offset in pitch_link frame: (0.1, 0, 2.0)
-        # After Ry(pitch): arm_x = 0.1*cos_p + 2.0*sin_p,  arm_z = -0.1*sin_p + 2.0*cos_p
-        # Joint offsets along Z: yaw_joint 0.075 + pitch_joint 0.1 = 0.175
-        cam_offset_x = 0.1 * cos_p + 2.0 * sin_p      # in yaw-rotated XY plane
-        cam_offset_z = -0.1 * sin_p + 2.0 * cos_p + 0.175
+        # Camera offset in pitch_link frame, read from cfg so projection stays
+        # in sync with the actual TiledCamera placement.
+        cam_off_x, _, cam_off_z = self.cfg.tiled_camera_cfg.offset.pos
+        # Fixed URDF offsets (base → pitch_link) along gimbal Z:
+        #   yaw_joint origin at 0.075, pitch_joint origin at 0.1 → sum 0.175.
+        pitch_link_z = 0.175
+
+        # After Ry(pitch) applied to the pitch_link-frame offset:
+        #   arm_x = cam_off_x*cos_p + cam_off_z*sin_p
+        #   arm_z = -cam_off_x*sin_p + cam_off_z*cos_p
+        cam_offset_x = cam_off_x * cos_p + cam_off_z * sin_p   # in yaw-rotated XY plane
+        cam_offset_z = -cam_off_x * sin_p + cam_off_z * cos_p + pitch_link_z
 
         cam_x = gimbal_pos_w[:, 0] + cos_y * cam_offset_x
         cam_y = gimbal_pos_w[:, 1] + sin_y * cam_offset_x
@@ -319,6 +351,7 @@ class TargetAimingEnv(DirectRLEnv):
 # ----------------------------------------------------------------------
 @torch.jit.script
 def compute_rewards(
+    rew_scale_pixel_center: float,
     rew_scale_pixel_error: float,
     rew_scale_action_smooth: float,
     rew_scale_success: float,
@@ -333,21 +366,26 @@ def compute_rewards(
     reset_terminated: torch.Tensor,
 ) -> torch.Tensor:
 
-    # error improvement reward
-    error_delta = prev_pixel_error - pixel_error
+    visible_f = target_visible.float()
+
+    # Absolute centering shaping: always dense while visible, no dependence on prev state.
+    rew_center = rew_scale_pixel_center * (1.0 - pixel_error) * visible_f
+
+    # Delta improvement, clipped to avoid spikes at reset / visibility flips.
+    error_delta = (prev_pixel_error - pixel_error).clamp(-0.1, 0.1)
     rew_pixel = rew_scale_pixel_error * error_delta
 
-    # smooth
+    # Smooth (kept for config compatibility; default scale is 0).
     rew_smooth = rew_scale_action_smooth * torch.sum(actions ** 2, dim=-1)
 
-    # success
+    # Success bonus.
     rew_success = rew_scale_success * (pixel_error < success_threshold).float()
 
-    # alive
-    rew_alive = rew_scale_alive * target_visible.float() * (1.0 - reset_terminated.float())
+    # Alive: only credit when visible and not just terminated.
+    rew_alive = rew_scale_alive * visible_f * (1.0 - reset_terminated.float())
 
-    # idle penalty: penalize staying still when target is not centered
+    # Idle penalty (default scale is 0).
     not_centered = (pixel_error > success_threshold).float()
     rew_idle = rew_scale_idle * is_idle.float() * not_centered
 
-    return rew_pixel + rew_smooth + rew_success + rew_alive + rew_idle
+    return rew_center + rew_pixel + rew_smooth + rew_success + rew_alive + rew_idle

@@ -6,17 +6,18 @@ from isaaclab.utils import configclass
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlCNNModelCfg, RslRlMLPModelCfg, RslRlPpoAlgorithmCfg
 
 
-# Shared CNN configuration for the image encoder
+# Shared CNN configuration for the image encoder.
+# Sized for 256x256 input: 256→63→30→14→6→4, flatten=4*4*256=4096.
 _CNN_CFG = RslRlCNNModelCfg.CNNCfg(
-    output_channels=[32,64,128,256,256],
-    kernel_size=[8,4,3,3,3],
-    stride=[4,2,2,2,1],
+    output_channels=[32, 64, 128, 256, 256],
+    kernel_size=[8, 4, 3, 3, 3],
+    stride=[4, 2, 2, 2, 1],
     activation="elu",
 )
 
 @configclass
 class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 48
+    num_steps_per_env = 128
     max_iterations = 10000
     save_interval = 50
     experiment_name = "target_aiming_direct"
@@ -30,17 +31,16 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     actor = RslRlCNNModelCfg(
         hidden_dims=[256, 128],
         activation="elu",
-        obs_normalization=False,
+        obs_normalization=True,
         stochastic=True,
-        init_noise_std=0.3,
         distribution_cfg=RslRlMLPModelCfg.CategoricalDistributionCfg(),
         cnn_cfg=_CNN_CFG,
     )
 
     critic = RslRlCNNModelCfg(
-        hidden_dims=[512,256, 128],
+        hidden_dims=[512, 256, 128],
         activation="elu",
-        obs_normalization=False,
+        obs_normalization=True,
         stochastic=False,
         cnn_cfg=_CNN_CFG,
     )
@@ -48,15 +48,15 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
-        clip_param=0.2,
-        entropy_coef=0.02,
-        num_learning_epochs=5,
-        num_mini_batches=4,
+        clip_param=0.1,
+        entropy_coef=0.15,
+        num_learning_epochs=3,
+        num_mini_batches=8,
         learning_rate=1.0e-4,
-        schedule="adaptive",
+        schedule="fixed",
         gamma=0.99,
         lam=0.95,
-        desired_kl=0.01,
+        desired_kl=0.02,
         max_grad_norm=1.0,
         share_cnn_encoders=True,
     )
